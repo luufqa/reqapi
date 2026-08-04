@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>REQAPI</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div id="auth" class="auth-shell hidden">
+      <form id="auth-form" class="auth-panel">
+        <h1>REQAPI</h1>
+        <p id="auth-mode">Sign in to the service</p>
+        <label>
+          Username
+          <input id="auth-username" value="admin" autocomplete="username" required />
+        </label>
+        <label>
+          Password
+          <input id="auth-password" type="password" autocomplete="current-password" required />
+        </label>
+        <label id="auth-confirm-row" class="hidden">
+          Confirm password
+          <input id="auth-confirm-password" type="password" autocomplete="new-password" />
+        </label>
+        <div class="auth-actions">
+          <button id="auth-submit" type="submit">Sign in</button>
+        </div>
+        <div id="auth-error" class="error"></div>
+      </form>
+    </div>
+
+    <main id="app" class="app-shell hidden">
+      <header class="topbar">
+        <div>
+          <strong>REQAPI</strong>
+        </div>
+        <div class="top-actions">
+          <span id="current-user">admin</span>
+          <button id="help-btn" class="icon-btn help-btn" title="Help" type="button">?</button>
+          <button
+            id="delete-requests-btn"
+            class="icon-btn trash-btn"
+            title="Deletion requests"
+            type="button"
+            aria-label="Deletion requests"
+          >
+            <svg class="trash-icon trash-icon-empty" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5" />
+            </svg>
+            <svg class="trash-icon trash-icon-filled" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M9 11h6v5H9z" />
+            </svg>
+            <span id="delete-requests-count" class="trash-badge hidden">0</span>
+          </button>
+          <div id="account-settings" class="account-settings hidden">
+            <button
+              id="account-settings-btn"
+              class="icon-btn"
+              title="User administration"
+              aria-label="User administration"
+              type="button"
+            >⚙</button>
+          </div>
+          <button id="logout-btn">Exit</button>
+        </div>
+      </header>
+
+      <aside class="sidebar">
+        <div class="section-title">
+          <span>Collections</span>
+          <button id="new-collection-btn" title="New collection">+</button>
+        </div>
+        <div id="collections-list" class="list"></div>
+        <div class="tab-sets-panel">
+          <div class="section-title">
+            <span>Tab sets</span>
+            <button id="new-tab-set-btn" title="Create tab set">+</button>
+          </div>
+          <div id="tab-sets-list" class="tab-sets-list"></div>
+        </div>
+        <div class="sidebar-actions">
+          <button id="export-btn">Export</button>
+          <label class="file-button">
+            Import
+            <input id="import-file" type="file" accept="application/json" />
+          </label>
+        </div>
+      </aside>
+
+      <div id="sidebar-resizer" class="sidebar-resizer" title="Resize sidebar" aria-hidden="true"></div>
+
+      <section class="editor-pane">
+        <div class="request-toolbar">
+          <div
+            id="request-save-status"
+            class="request-save-status is-current"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="request-save-status-icon" aria-hidden="true"></span>
+            <span class="request-save-status-label">Up to date</span>
+          </div>
+        </div>
+
+        <div id="request-tabs" class="request-tabs"></div>
+
+        <div class="request-head">
+          <select id="request-method" class="method-select">
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+            <option value="DELETE">DELETE</option>
+            <option value="HEAD">HEAD</option>
+            <option value="OPTIONS">OPTIONS</option>
+          </select>
+          <input id="request-url" placeholder="http://localhost:8000/api" />
+          <button id="send-btn">Send</button>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="params">Params</button>
+          <button class="tab" data-tab="auth">Authorization</button>
+          <button class="tab" data-tab="body">Body</button>
+          <button class="tab" data-tab="scripts">Scripts</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </div>
+
+        <div class="tab-body" id="tab-params">
+          <div class="params-head">
+            <strong>Query Params</strong>
+            <button id="add-param-btn">Add</button>
+          </div>
+          <div class="key-value-table">
+            <div class="kv-row kv-header">
+              <div></div>
+              <div>Key</div>
+              <div>Value</div>
+              <div>Description</div>
+              <div></div>
+            </div>
+            <div id="params-rows"></div>
+          </div>
+        </div>
+        <div class="tab-body hidden" id="tab-headers">
+          <textarea id="headers-editor" spellcheck="false"></textarea>
+        </div>
+        <div class="tab-body hidden" id="tab-cookies">
+          <textarea id="cookies-editor" spellcheck="false"></textarea>
+        </div>
+        <div class="tab-body hidden" id="tab-auth">
+          <div class="authorization-panel">
+            <label class="auth-type-control" for="request-auth-type">
+              <span>Type</span>
+              <select id="request-auth-type">
+                <option value="bearer">Bearer Token</option>
+                <option value="basic">Basic Auth</option>
+              </select>
+            </label>
+            <div id="bearer-auth-panel" class="auth-method-panel">
+              <label for="request-auth-token">Bearer token</label>
+              <textarea
+                id="request-auth-token"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="Paste token without Bearer prefix"
+              ></textarea>
+            </div>
+            <div id="basic-auth-panel" class="auth-method-panel auth-basic-grid hidden">
+              <label for="request-basic-username">Username</label>
+              <input id="request-basic-username" autocomplete="off" placeholder="username" />
+              <label for="request-basic-password">Password</label>
+              <input
+                id="request-basic-password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="password"
+              />
+            </div>
+            <div class="field-hint">Stored with this request and shared with all users.</div>
+          </div>
+        </div>
+        <div class="tab-body hidden" id="tab-body">
+          <div class="body-mode-row">
+            <label><input type="radio" name="body-mode" value="none" /> none</label>
+            <label><input type="radio" name="body-mode" value="form-data" /> form-data</label>
+            <label><input type="radio" name="body-mode" value="form" /> x-www-form-urlencoded</label>
+            <label><input type="radio" name="body-mode" value="raw" /> raw</label>
+            <label><input type="radio" name="body-mode" value="binary" /> binary</label>
+            <label><input type="radio" name="body-mode" value="graphql" /> GraphQL</label>
+            <select id="body-format">
+              <option value="json">JSON</option>
+              <option value="text">Text</option>
+            </select>
+            <button id="copy-body-btn" class="body-copy-btn" type="button">Copy</button>
+          </div>
+          <div class="body-content">
+            <div id="body-empty" class="body-empty">No body for this request.</div>
+            <div id="body-raw-panel" class="code-editor">
+              <div id="body-line-numbers" class="line-numbers">1</div>
+              <textarea id="body-editor" spellcheck="false" wrap="off"></textarea>
+            </div>
+            <div id="body-form-panel" class="body-form-panel">
+              <div class="params-head">
+                <strong id="body-form-title">Form fields</strong>
+                <button id="add-body-form-row-btn" type="button">Add</button>
+              </div>
+              <div class="key-value-table">
+                <div class="kv-row kv-header body-form-header">
+                  <div></div>
+                  <div>Key</div>
+                  <div class="kv-type-cell">Type</div>
+                  <div>Value</div>
+                  <div>Description</div>
+                  <div></div>
+                </div>
+                <div id="body-form-rows"></div>
+              </div>
+            </div>
+            <div id="body-binary-panel" class="body-special-panel">
+              <div class="binary-picker">
+                <button id="choose-binary-file-btn" type="button">Select file</button>
+                <span id="binary-file-name">No file selected</span>
+                <button id="remove-binary-file-btn" class="binary-remove-btn" type="button" aria-label="Remove selected file" title="Remove selected file">×</button>
+                <input id="binary-file-input" type="file" hidden />
+              </div>
+            </div>
+            <div id="body-graphql-panel" class="graphql-panel">
+              <section class="graphql-editor-field">
+                <label for="graphql-query">Query</label>
+                <div class="graphql-code-editor code-editor">
+                  <div id="graphql-query-line-numbers" class="line-numbers">1</div>
+                  <textarea id="graphql-query" spellcheck="false" wrap="off" placeholder="query { ... }"></textarea>
+                </div>
+              </section>
+              <section class="graphql-editor-field">
+                <label for="graphql-variables">GraphQL Variables</label>
+                <div class="graphql-code-editor code-editor">
+                  <div id="graphql-variables-line-numbers" class="line-numbers">1</div>
+                  <textarea id="graphql-variables" spellcheck="false" wrap="off" placeholder="{}"></textarea>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+        <div class="tab-body hidden" id="tab-scripts">
+          <div class="scripts-panel">
+            <div class="scripts-side">
+              <button class="script-subtab active" data-script-tab="pre" type="button">Pre-request</button>
+              <button class="script-subtab" data-script-tab="post" type="button">Post-response</button>
+            </div>
+            <div class="scripts-editor">
+              <div id="pre-request-script-panel" class="script-editor-panel code-editor">
+                <div class="line-numbers">1</div>
+                <textarea
+                  id="pre-request-script"
+                  spellcheck="false"
+                  wrap="off"
+                  placeholder="Use JavaScript to configure this request dynamically."
+                ></textarea>
+              </div>
+              <div id="post-response-script-panel" class="script-editor-panel code-editor hidden">
+                <div class="line-numbers">1</div>
+                <textarea
+                  id="post-response-script"
+                  spellcheck="false"
+                  wrap="off"
+                  placeholder="Use JavaScript to write post-response checks."
+                ></textarea>
+              </div>
+              <div id="script-results" class="script-results">Scripts have not run yet.</div>
+            </div>
+          </div>
+        </div>
+        <div class="tab-body hidden" id="tab-env">
+          <textarea id="env-editor" spellcheck="false"></textarea>
+          <button id="save-env-btn">Save variables</button>
+        </div>
+        <div class="tab-body hidden" id="tab-settings">
+          <div class="settings-panel">
+            <label class="inline-check">
+              <input id="skip-tls-verification" type="checkbox" checked />
+              Skip TLS verification
+            </label>
+            <div id="tls-warning" class="tls-warning hidden">
+              TLS certificate verification is disabled for this request.
+            </div>
+          </div>
+        </div>
+
+        <div id="response-resizer" class="response-resizer" title="Resize response panel" aria-hidden="true">
+          <span></span>
+        </div>
+
+        <div class="response-pane">
+          <div class="response-meta">
+            <span id="response-meta-text">Response</span>
+            <div class="response-actions">
+              <button id="copy-response-btn" class="response-tool-btn" title="Copy response text" disabled>Copy</button>
+              <button id="download-response-btn" class="response-tool-btn" title="Download response as .txt" disabled>
+                TXT
+              </button>
+              <button
+                id="download-curl-btn"
+                class="response-tool-btn"
+                title="Download current request as curl.txt"
+                disabled
+              >Curl</button>
+            </div>
+          </div>
+          <div id="response-output" class="response-output">
+            <div class="response-empty">Response body will appear here.</div>
+          </div>
+        </div>
+      </section>
+
+      <div id="request-context-menu" class="context-menu hidden">
+        <button data-action="edit-name">Edit name</button>
+        <button data-action="duplicate">Duplicate</button>
+        <div id="request-add-set-menu" class="context-submenu">
+          <button data-action="add-in-set">Add in set</button>
+          <div id="request-add-set-options" class="context-submenu-panel"></div>
+        </div>
+  <button data-action="mark-delete" class="danger">Mark for delete</button>
+  <button data-action="delete" class="danger admin-only">Delete</button>
+</div>
+      <div id="tab-context-menu" class="context-menu hidden">
+        <button data-action="edit">Edit</button>
+        <button data-action="close">Close</button>
+        <button data-action="duplicate">Duplicate</button>
+        <div id="tab-add-set-menu" class="context-submenu">
+          <button data-action="add-in-set">Add in set</button>
+          <div id="tab-add-set-options" class="context-submenu-panel"></div>
+        </div>
+  <button data-action="mark-delete" class="danger">Mark for delete</button>
+  <button data-action="delete" class="danger admin-only">Delete</button>
+  <button data-action="close-all" class="danger">Close all</button>
+</div>
+      <div id="tab-set-context-menu" class="context-menu hidden">
+        <button data-action="open">Open</button>
+        <button data-action="rename">Rename</button>
+        <button data-action="delete" class="danger">Delete</button>
+      </div>
+      <div id="tab-set-request-context-menu" class="context-menu hidden">
+        <button data-action="remove-from-set" class="danger">Remove from set</button>
+      </div>
+
+      <div id="onboarding-overlay" class="onboarding-overlay hidden">
+        <div id="onboarding-focus" class="onboarding-focus" aria-hidden="true"></div>
+        <div id="onboarding-connector" class="onboarding-connector" aria-hidden="true"></div>
+        <div id="onboarding-card" class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+          <div class="onboarding-step" id="onboarding-step">1 / 8</div>
+          <h2 id="onboarding-title">REQAPI</h2>
+          <p id="onboarding-text"></p>
+          <div class="onboarding-actions">
+            <button id="onboarding-close" type="button">Close</button>
+            <button id="onboarding-next" class="primary" type="button">Next</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="admin-users-modal" class="modal-backdrop hidden">
+        <div class="modal-panel admin-users-panel">
+          <div class="modal-head">
+        <div>
+          <h2>User administration</h2>
+          <p>Manage passwords and grant full administrator access.</p>
+        </div>
+            <button id="admin-users-close" class="icon-btn" type="button" title="Close">×</button>
+          </div>
+
+          <div id="admin-users-list" class="admin-users-list"></div>
+
+          <form id="admin-password-form" class="admin-password-form">
+            <label>
+              User
+              <select id="admin-user-select"></select>
+            </label>
+            <label>
+              New password
+              <input id="admin-new-password" type="password" autocomplete="new-password" minlength="6" />
+            </label>
+            <label>
+              Confirm password
+              <input id="admin-confirm-password" type="password" autocomplete="new-password" minlength="6" />
+            </label>
+            <button class="primary" type="submit">Change password</button>
+            <div id="admin-users-message" class="admin-users-message"></div>
+          </form>
+        </div>
+      </div>
+
+      <div id="delete-requests-modal" class="modal-backdrop hidden">
+        <div class="modal-panel delete-requests-panel" role="dialog" aria-modal="true" aria-labelledby="delete-requests-title">
+          <div class="modal-head">
+            <div>
+              <h2 id="delete-requests-title">Deletion requests</h2>
+              <p>Requests submitted by service users.</p>
+            </div>
+            <button id="delete-requests-close" class="icon-btn" type="button" title="Close">×</button>
+          </div>
+          <div id="delete-requests-list" class="delete-requests-list"></div>
+        </div>
+      </div>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
