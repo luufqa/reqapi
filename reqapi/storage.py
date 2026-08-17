@@ -217,6 +217,15 @@ class Storage:
                     updated_at INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS file_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id TEXT NOT NULL,
+                    name TEXT,
+                    mime_type TEXT,
+                    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    created_at INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id INTEGER REFERENCES requests(id) ON DELETE SET NULL,
@@ -1298,6 +1307,18 @@ class Storage:
             rows = conn.execute("SELECT key, value FROM env_vars ORDER BY key").fetchall()
             return {row["key"]: row["value"] for row in rows}
 
+    def get_env_vars_with_computed(self) -> dict[str, str]:
+        """Environment variables plus reserved computed variables like docTempFileId.
+
+        A manually-defined env var always wins over the computed value.
+        """
+        env = self.get_env_vars()
+        if "docTempFileId" not in env:
+            last_doc_id = self.get_last_doc_id()
+            if last_doc_id is not None:
+                env["docTempFileId"] = last_doc_id
+        return env
+
     def replace_env_vars(self, values: dict[str, str], user_id: int) -> dict[str, str]:
         cleaned = {
             str(key).strip(): str(value)
@@ -1311,6 +1332,70 @@ class Storage:
                 [(key, value, user_id, now_ts()) for key, value in cleaned.items()],
             )
         return self.get_env_vars()
+
+    FILE_HISTORY_LIMIT = 50
+
+    def list_file_history(self, limit: int = FILE_HISTORY_LIMIT) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT file_history.id, file_id, name, mime_type, file_history.created_at,
+                       users.username AS created_by_username
+                FROM file_history
+                LEFT JOIN users ON users.id = file_history.created_by
+                ORDER BY file_history.id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_last_doc_id(self) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT file_id FROM file_history ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return row["file_id"] if row else None
+
+    def add_file_history_entry(
+        self, file_id: str, name: str | None, mime_type: str | None, user_id: int
+    ) -> dict[str, Any]:
+        file_id = str(file_id or "").strip()
+        if not file_id:
+            raise ValueError("file_id is required.")
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO file_history (file_id, name, mime_type, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (file_id, str(name).strip() if name else None, str(mime_type).strip() if mime_type else None, user_id, now_ts()),
+            )
+            # Keep the table bounded to the most recent entries.
+            conn.execute(
+                "DELETE FROM file_history WHERE id NOT IN ("
+                "  SELECT id FROM file_history ORDER BY id DESC LIMIT ?"
+                ")",
+                (self.FILE_HISTORY_LIMIT,),
+            )
+            entry_id = cursor.lastrowid
+            row = conn.execute(
+                """
+                SELECT file_history.id, file_id, name, mime_type, file_history.created_at,
+                       users.username AS created_by_username
+                FROM file_history
+                LEFT JOIN users ON users.id = file_history.created_by
+                WHERE file_history.id = ?
+                """,
+                (entry_id,),
+            ).fetchone()
+            return dict(row) if row else {"id": entry_id, "file_id": file_id, "name": name, "mime_type": mime_type}
+
+    def delete_file_history_entry(self, entry_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM file_history WHERE id = ?", (int(entry_id),))
+
+    def clear_file_history(self) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM file_history")
 
     def export_data(self) -> dict[str, Any]:
         collections = self.list_collections()

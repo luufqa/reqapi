@@ -40,6 +40,17 @@
           <span id="current-user">admin</span>
           <button id="help-btn" class="icon-btn help-btn" title="Help" type="button">?</button>
           <button
+            id="file-history-btn"
+            class="icon-btn file-history-btn"
+            title="File upload history"
+            type="button"
+            aria-label="File upload history"
+          >
+            <svg class="file-history-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M16.5 6.5 8 15a3 3 0 1 0 4.24 4.24l8.13-8.13a5 5 0 1 0-7.07-7.07L4.93 12.4" />
+            </svg>
+          </button>
+          <button
             id="delete-requests-btn"
             class="icon-btn trash-btn"
             title="Deletion requests"
@@ -250,6 +261,7 @@
             <div class="scripts-side">
               <button class="script-subtab active" data-script-tab="pre" type="button">Pre-request</button>
               <button class="script-subtab" data-script-tab="post" type="button">Post-response</button>
+              <button id="script-example-btn" class="script-example-btn" type="button">💡 Example</button>
             </div>
             <div class="scripts-editor">
               <div id="pre-request-script-panel" class="script-editor-panel code-editor">
@@ -308,6 +320,12 @@
                 title="Download current request as curl.txt"
                 disabled
               >Curl</button>
+              <button
+                id="export-response-btn"
+                class="response-tool-btn export-response-btn"
+                title="Download exported response file"
+                disabled
+              >Export</button>
             </div>
           </div>
           <div id="response-output" class="response-output">
@@ -329,6 +347,7 @@
       <div id="tab-context-menu" class="context-menu hidden">
         <button data-action="edit">Edit</button>
         <button data-action="close">Close</button>
+        <button data-action="close-other">Close other</button>
         <button data-action="duplicate">Duplicate</button>
         <div id="tab-add-set-menu" class="context-submenu">
           <button data-action="add-in-set">Add in set</button>
@@ -402,6 +421,62 @@
             <button id="delete-requests-close" class="icon-btn" type="button" title="Close">×</button>
           </div>
           <div id="delete-requests-list" class="delete-requests-list"></div>
+        </div>
+      </div>
+
+      <div id="file-history-modal" class="modal-backdrop hidden">
+        <div class="modal-panel file-history-panel" role="dialog" aria-modal="true" aria-labelledby="file-history-title">
+          <div class="modal-head">
+            <div>
+              <h2 id="file-history-title">File upload history</h2>
+              <p>
+                Recent files uploaded via requests that call <code>pm.fileHistory.add()</code>.
+                The most recently added file is always available as <code>{{docTempFileId}}</code> in any request.
+              </p>
+            </div>
+            <button id="file-history-close" class="icon-btn" type="button" title="Close">×</button>
+          </div>
+          <div id="file-history-list" class="file-history-list"></div>
+          <div class="file-history-footer">
+            <button id="file-history-clear-btn" class="danger">Clear history</button>
+          </div>
+        </div>
+      </div>
+      <div id="script-example-modal" class="modal-backdrop hidden">
+        <div class="modal-panel script-example-panel" role="dialog" aria-modal="true" aria-labelledby="script-example-title">
+          <div class="modal-head">
+            <div>
+              <h2 id="script-example-title">Example: track an uploaded temp file</h2>
+              <p>How to save an uploaded file's id and reuse it in other requests.</p>
+            </div>
+            <button id="script-example-close" class="icon-btn" type="button" title="Close">×</button>
+          </div>
+          <div class="script-example-body">
+            <h3>1. Body → form-data</h3>
+            <table class="script-example-table">
+              <thead>
+                <tr><th>Key</th><th>Type</th><th>Value</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>data</td><td>File</td><td>(attached file)</td></tr>
+                <tr><td>mimeType</td><td>Text</td><td><code>application/pdf</code></td></tr>
+                <tr><td>name</td><td>Text</td><td><code>test.pdf</code></td></tr>
+              </tbody>
+            </table>
+            <h3>2. Scripts → Post-response</h3>
+            <pre id="script-example-code" class="script-example-code">const r = pm.response.json();
+pm.environment.set("docTempFileId", r.id);
+pm.fileHistory.add({ id: r.id, name: r.name, mimeType: r.mimeType });</pre>
+            <p class="script-example-note">
+              After this, the file's id is available as <code>{{docTempFileId}}</code> in any
+              other request — the most recently uploaded file is filled in automatically unless
+              the variable is set manually. View the full history of uploaded files with the
+              📎 button in the header.
+            </p>
+          </div>
+          <div class="script-example-footer">
+            <button id="script-example-copy" type="button">Copy script</button>
+          </div>
         </div>
       </div>
     </main>

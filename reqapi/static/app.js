@@ -16,7 +16,9 @@ const state = {
   currentCollectionId: null,
   currentRequest: null,
   env: {},
+  fileHistory: [],
   lastResponseText: "",
+  lastExportFile: null,
   hasResponse: false,
   requestRunning: false,
   requestAbortController: null,
@@ -66,6 +68,43 @@ const CURL_BLOCKED_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
+const FILE_RESPONSE_TYPES = new Set([
+  "application/octet-stream",
+  "application/pdf",
+  "application/zip",
+  "application/x-7z-compressed",
+  "application/x-rar-compressed",
+  "application/x-tar",
+  "application/gzip",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/csv",
+]);
+const FILE_EXTENSION_BY_TYPE = {
+  "application/pdf": "pdf",
+  "application/zip": "zip",
+  "application/x-7z-compressed": "7z",
+  "application/x-rar-compressed": "rar",
+  "application/x-tar": "tar",
+  "application/gzip": "gz",
+  "application/msword": "doc",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "text/csv": "csv",
+};
 const pairTemplate = JSON.stringify([{ key: "", value: "", enabled: true }], null, 2);
 
 function formatCount(value, singular) {
@@ -234,6 +273,7 @@ function cancelActiveExecution() {
 
 function resetResponsePane() {
   state.lastResponseText = "";
+  state.lastExportFile = null;
   state.hasResponse = false;
   state.requestRunning = false;
   if (state.requestAbortController) {
@@ -244,6 +284,7 @@ function resetResponsePane() {
   if (!$("response-output")) return;
   $("copy-response-btn").disabled = true;
   $("download-response-btn").disabled = true;
+  updateExportButton();
   $("response-meta-text").textContent = "Response";
   $("response-output").innerHTML = '<div class="response-empty">Response body will appear here.</div>';
 }
@@ -291,6 +332,7 @@ async function loadAppData() {
     loadTabSets(),
     api("/api/catalog-state"),
     loadDeleteRequests({ render: false }),
+    loadFileHistory(),
   ]);
   state.catalogSnapshot = catalog;
   await loadUserWorkspace();
@@ -1308,6 +1350,24 @@ function scrollActiveRequestTabIntoView() {
   }
 }
 
+function closeOtherRequestTabs(key) {
+  const keepTab = state.openTabs.find((item) => item.key === key);
+  if (!keepTab) return;
+  const others = state.openTabs.filter((item) => item.key !== key);
+  if (!others.length) return;
+  if (state.activeTabKey === key) {
+    syncActiveTabFromEditor();
+  }
+  const closedCollectionIds = new Set(others.map((tab) => tab.request?.collection_id).filter(Boolean));
+  state.openTabs = [keepTab];
+  state.activeTabKey = keepTab.key;
+  activateRequestTab(keepTab.key, { skipSync: true });
+  collapseCollectionsWithoutOpenTabs(closedCollectionIds);
+  renderRequestTabs();
+  renderCollections();
+  scheduleWorkspaceSave();
+}
+
 function closeAllRequestTabs() {
   if (!state.openTabs.length) return;
   if (!confirm("Close all tabs?")) return;
@@ -1708,6 +1768,7 @@ async function sendRequest() {
       request = { ...request, ...preResult.request, headers: preResult.request.headers };
       await applyScriptEnvironment(preResult.environment);
       renderScriptResults("Pre-request", preResult);
+      await persistFileHistoryEntries(preResult.fileHistory);
     }
     const data = await api("/api/execute", {
       method: "POST",
@@ -1725,6 +1786,7 @@ async function sendRequest() {
       await applyScriptEnvironment(postResult.environment);
       renderScriptResults("Post-response", postResult);
       data.result.script_tests = postResult.tests;
+      await persistFileHistoryEntries(postResult.fileHistory);
     }
     renderResponse(data.result);
   } catch (error) {
@@ -1761,6 +1823,14 @@ async function applyScriptEnvironment(environment) {
   state.env = data.env || environment;
 }
 
+async function persistFileHistoryEntries(entries) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  for (const entry of entries) {
+    await addFileHistoryEntry(entry);
+  }
+  await loadFileHistory();
+}
+
 function renderScriptResults(stage, result) {
   const tests = Array.isArray(result.tests) ? result.tests : [];
   const logs = Array.isArray(result.logs) ? result.logs : [];
@@ -1788,6 +1858,7 @@ function runRequestScript(script, context) {
       const logs = [];
       const environment = { ...(data.context.environment || {}) };
       const variables = {};
+      const fileHistoryEntries = [];
       const request = JSON.parse(JSON.stringify(data.context.request || {}));
       const response = data.context.response || null;
       const headersApi = (items) => ({
@@ -1839,6 +1910,7 @@ function runRequestScript(script, context) {
         response: response ? {
           code: response.status || 0,
           status: response.reason || '',
+          error: response.error || null,
           responseTime: response.duration_ms || 0,
           text: () => response.response_body || '',
           json: () => JSON.parse(response.response_body || 'null'),
@@ -1849,15 +1921,26 @@ function runRequestScript(script, context) {
           catch (error) { tests.push({ name: String(name), passed: false, error: error.message }); }
         },
         expect,
+        fileHistory: {
+          add(fileEntry) {
+            const fileId = String(fileEntry?.id ?? fileEntry?.file_id ?? '').trim();
+            if (!fileId) throw new Error('pm.fileHistory.add requires an id (or file_id).');
+            fileHistoryEntries.push({
+              file_id: fileId,
+              name: fileEntry?.name != null ? String(fileEntry.name) : null,
+              mime_type: fileEntry?.mimeType || fileEntry?.mime_type || null,
+            });
+          },
+        },
       };
       const console = { log: (...values) => logs.push(values.map((value) => typeof value === 'string' ? value : JSON.stringify(value)).join(' ')) };
       try {
         Function('pm', 'console', '"use strict";\\n' + data.script)(pm, console);
         request.method = pmRequest.method;
         request.url = String(pmRequest.url || request.url || '');
-        self.postMessage({ ok: true, request, environment, tests, logs });
+        self.postMessage({ ok: true, request, environment, tests, logs, fileHistory: fileHistoryEntries });
       } catch (error) {
-        self.postMessage({ ok: false, error: error.message, request, environment, tests, logs });
+        self.postMessage({ ok: false, error: error.message, request, environment, tests, logs, fileHistory: fileHistoryEntries });
       }
     };
   `;
@@ -1901,8 +1984,10 @@ function renderResponse(result) {
   const bodyView = formatBody(result.response_body, result.response_headers);
   state.lastResponseText = bodyView.text || result.error || "";
   state.hasResponse = true;
+  state.lastExportFile = buildExportFile(result);
   $("copy-response-btn").disabled = false;
   $("download-response-btn").disabled = false;
+  updateExportButton();
   $("response-output").innerHTML = `
     <section class="response-section response-section-main">
       <pre class="response-code">${escapeHtml(bodyView.text || "")}</pre>
@@ -1925,8 +2010,10 @@ function setRequestRunning(isRunning, request = null) {
 function renderResponseLoading(request) {
   state.hasResponse = false;
   state.lastResponseText = "";
+  state.lastExportFile = null;
   $("copy-response-btn").disabled = true;
   $("download-response-btn").disabled = true;
+  updateExportButton();
   $("response-meta-text").textContent = "Sending request...";
   $("response-output").innerHTML = `
     <div class="response-loading">
@@ -1950,6 +2037,113 @@ function downloadResponseText() {
   link.download = `${name}-${stamp}.txt`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function getResponseHeader(headers, name) {
+  const entry = Object.entries(headers || {}).find(
+    ([key]) => key.toLowerCase() === name.toLowerCase(),
+  );
+  if (!entry) return "";
+  return Array.isArray(entry[1]) ? entry[1][0] || "" : String(entry[1] || "");
+}
+
+function responseContentType(headers) {
+  return getResponseHeader(headers, "content-type").split(";", 1)[0].trim().toLowerCase();
+}
+
+function parseDispositionFilename(value) {
+  const header = String(value || "");
+  const encodedMatch = header.match(/filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i);
+  if (encodedMatch) {
+    try {
+      return decodeURIComponent(encodedMatch[1].trim().replace(/^"|"$/g, ""));
+    } catch (_) {
+      return encodedMatch[1].trim().replace(/^"|"$/g, "");
+    }
+  }
+  const filenameMatch = header.match(/filename\s*=\s*("([^"]+)"|[^;]+)/i);
+  if (!filenameMatch) return "";
+  return (filenameMatch[2] || filenameMatch[1] || "").trim().replace(/^"|"$/g, "");
+}
+
+function looksLikeFileResponse(result) {
+  const headers = result?.response_headers || {};
+  const disposition = getResponseHeader(headers, "content-disposition").toLowerCase();
+  if (disposition.includes("attachment") || disposition.includes("filename=")) return true;
+  const contentType = responseContentType(headers);
+  if (!contentType) return false;
+  if (FILE_RESPONSE_TYPES.has(contentType)) return true;
+  return contentType.startsWith("image/")
+    || contentType.startsWith("audio/")
+    || contentType.startsWith("video/");
+}
+
+function extensionForContentType(contentType) {
+  if (FILE_EXTENSION_BY_TYPE[contentType]) return FILE_EXTENSION_BY_TYPE[contentType];
+  if (contentType.startsWith("image/")) return contentType.slice("image/".length).replace("jpeg", "jpg");
+  if (contentType.startsWith("audio/")) return contentType.slice("audio/".length);
+  if (contentType.startsWith("video/")) return contentType.slice("video/".length);
+  return "bin";
+}
+
+function buildExportFilename(result, contentType) {
+  const dispositionName = parseDispositionFilename(
+    getResponseHeader(result?.response_headers, "content-disposition"),
+  );
+  const baseName = safeFilename(dispositionName || state.currentRequest?.name || "export");
+  if (/\.[A-Za-z0-9]{1,8}$/.test(baseName)) return baseName;
+  return `${baseName}.${extensionForContentType(contentType)}`;
+}
+
+function buildExportFile(result) {
+  const successful = Number(result?.status) >= 200 && Number(result?.status) < 300;
+  if (!successful || !result?.response_body_base64 || !looksLikeFileResponse(result)) return null;
+  const contentType = responseContentType(result.response_headers) || "application/octet-stream";
+  return {
+    bodyBase64: result.response_body_base64,
+    contentType,
+    fileName: buildExportFilename(result, contentType),
+    seen: false,
+  };
+}
+
+function updateExportButton() {
+  const button = $("export-response-btn");
+  if (!button) return;
+  const available = Boolean(state.lastExportFile);
+  const unseen = available && !state.lastExportFile.seen;
+  button.disabled = !available;
+  button.classList.toggle("export-available", unseen);
+  button.classList.toggle("export-attention", unseen);
+  button.title = available
+    ? `Download ${state.lastExportFile.fileName}`
+    : "Download exported response file";
+}
+
+function base64ToBytes(value) {
+  const binary = atob(String(value || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function downloadExportFile() {
+  if (!state.lastExportFile) return;
+  state.lastExportFile.seen = true;
+  updateExportButton();
+  const blob = new Blob([base64ToBytes(state.lastExportFile.bodyBase64)], {
+    type: state.lastExportFile.contentType || "application/octet-stream",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = state.lastExportFile.fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function renderCurlTemplate(value, variables = state.env) {
@@ -2784,6 +2978,94 @@ async function saveEnv() {
   setJsonEditor("env-editor", state.env);
 }
 
+async function loadFileHistory() {
+  const data = await api("/api/file-history");
+  state.fileHistory = data.items || [];
+  renderFileHistory();
+}
+
+async function addFileHistoryEntry(entry) {
+  const fileId = String(entry?.file_id ?? entry?.id ?? "").trim();
+  if (!fileId) return;
+  await api("/api/file-history", {
+    method: "POST",
+    body: JSON.stringify({
+      file_id: fileId,
+      name: entry?.name ?? null,
+      mime_type: entry?.mime_type ?? entry?.mimeType ?? null,
+    }),
+  });
+}
+
+async function deleteFileHistoryEntry(id) {
+  await api(`/api/file-history/${id}`, { method: "DELETE" });
+  await loadFileHistory();
+}
+
+async function clearFileHistory() {
+  if (!state.fileHistory.length) return;
+  if (!confirm("Clear all file history?")) return;
+  await api("/api/file-history", { method: "DELETE" });
+  await loadFileHistory();
+}
+
+function openFileHistoryModal() {
+  renderFileHistory();
+  $("file-history-modal").classList.remove("hidden");
+  $("file-history-close").focus();
+}
+
+function closeFileHistoryModal() {
+  $("file-history-modal").classList.add("hidden");
+}
+
+function renderFileHistory() {
+  const list = $("file-history-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.fileHistory.length) {
+    list.innerHTML = '<div class="file-history-empty">No files uploaded yet. Upload a file and call pm.fileHistory.add() in a Post-response script to track it here.</div>';
+    return;
+  }
+  state.fileHistory.forEach((entry, index) => {
+    const row = document.createElement("div");
+    row.className = "file-history-row";
+    const meta = document.createElement("div");
+    meta.className = "file-history-meta";
+    const when = entry.created_at ? new Date(entry.created_at * 1000).toLocaleString() : "";
+    meta.innerHTML = `
+      <strong>${escapeHtml(entry.name || "(unnamed file)")}</strong>
+      <span class="file-history-id">${escapeHtml(entry.file_id)}</span>
+      <span class="file-history-sub">${escapeHtml(entry.mime_type || "")}${when ? ` · ${escapeHtml(when)}` : ""}${entry.created_by_username ? ` · ${escapeHtml(entry.created_by_username)}` : ""}</span>
+    `;
+    const actions = document.createElement("div");
+    actions.className = "file-history-actions";
+    if (index === 0) {
+      const lastDocBtn = document.createElement("button");
+      lastDocBtn.textContent = "Copy {{docTempFileId}}";
+      lastDocBtn.title = "Latest file — always resolved automatically by {{docTempFileId}}";
+      lastDocBtn.onclick = () => copyToClipboard("{{docTempFileId}}");
+      actions.appendChild(lastDocBtn);
+    }
+    const copyIdBtn = document.createElement("button");
+    copyIdBtn.textContent = "Copy ID";
+    copyIdBtn.onclick = () => copyToClipboard(entry.file_id);
+    actions.appendChild(copyIdBtn);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "danger";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.onclick = () => deleteFileHistoryEntry(entry.id).catch((error) => alert(error.message));
+    actions.appendChild(deleteBtn);
+    row.appendChild(meta);
+    row.appendChild(actions);
+    list.appendChild(row);
+  });
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard?.writeText(text).catch(() => {});
+}
+
 async function createCollection() {
   const name = prompt("Collection name");
   if (!name) return;
@@ -3531,6 +3813,7 @@ function wireEvents() {
   };
   $("copy-response-btn").onclick = () => copyResponseText().catch((error) => alert(error.message));
   $("copy-body-btn").onclick = () => copyRequestBodyText().catch((error) => alert(error.message));
+  $("export-response-btn").onclick = downloadExportFile;
   $("download-curl-btn").onclick = () => {
     try {
       downloadCurlScript();
@@ -3597,6 +3880,7 @@ function wireEvents() {
         await deleteRequestPermanently(tab.request);
       }
       if (action === "close") closeRequestTab(key);
+      if (action === "close-other") closeOtherRequestTabs(key);
       if (action === "duplicate") duplicateOpenTab(key);
       if (action === "close-all") closeAllRequestTabs();
     } catch (error) {
@@ -3750,6 +4034,23 @@ function wireEvents() {
       $("delete-requests-modal").classList.add("hidden");
     }
   };
+  $("file-history-btn").onclick = openFileHistoryModal;
+  $("file-history-close").onclick = closeFileHistoryModal;
+  $("file-history-modal").onclick = (event) => {
+    if (event.target === $("file-history-modal")) closeFileHistoryModal();
+  };
+  $("file-history-clear-btn").onclick = () => clearFileHistory().catch((error) => alert(error.message));
+  $("script-example-btn").onclick = () => {
+    $("script-example-modal").classList.remove("hidden");
+    $("script-example-close").focus();
+  };
+  $("script-example-close").onclick = () => $("script-example-modal").classList.add("hidden");
+  $("script-example-modal").onclick = (event) => {
+    if (event.target === $("script-example-modal")) {
+      $("script-example-modal").classList.add("hidden");
+    }
+  };
+  $("script-example-copy").onclick = () => copyToClipboard($("script-example-code").textContent);
   $("delete-requests-list").onclick = async (event) => {
     const approve = event.target.closest("[data-delete-approve]");
     const dismiss = event.target.closest("[data-delete-dismiss]");

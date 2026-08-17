@@ -496,6 +496,34 @@ class ReqApiHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.OK, {"env": updated})
             return
 
+        if path == "/api/file-history" and method == "GET":
+            self.send_json(HTTPStatus.OK, {"items": self.app.storage.list_file_history()})
+            return
+
+        if path == "/api/file-history" and method == "POST":
+            data = self.read_json()
+            entry = self.app.storage.add_file_history_entry(
+                data.get("file_id") or data.get("id"),
+                data.get("name"),
+                data.get("mime_type") or data.get("mimeType"),
+                actor_id,
+            )
+            self.send_json(HTTPStatus.OK, {"item": entry})
+            return
+
+        if path == "/api/file-history" and method == "DELETE":
+            self.app.storage.clear_file_history()
+            self.send_json(HTTPStatus.OK, {"ok": True})
+            return
+
+        if path.startswith("/api/file-history/") and method == "DELETE":
+            entry_id = path.removeprefix("/api/file-history/").strip("/")
+            if not entry_id.isdigit():
+                raise ValueError("A numeric file history id is required.")
+            self.app.storage.delete_file_history_entry(int(entry_id))
+            self.send_json(HTTPStatus.OK, {"ok": True})
+            return
+
         if path == "/api/execute" and method == "POST":
             data = self.read_json()
             execution_id = str(data.get("execution_id") or random_token()).strip()
@@ -510,7 +538,7 @@ class ReqApiHandler(BaseHTTPRequestHandler):
             try:
                 result = execute_request(
                     request,
-                    self.app.storage.get_env_vars(),
+                    self.app.storage.get_env_vars_with_computed(),
                     bearer_token,
                     cancellation=cancellation,
                 )

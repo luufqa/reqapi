@@ -20,11 +20,29 @@ from .security import (
 )
 
 
-MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_RESPONSE_DISPLAY_BYTES = 1024 * 1024
+MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 20
 METHODS_WITHOUT_BODY = {"HEAD"}
 MAX_FORM_FILE_BYTES = 20 * 1024 * 1024
 MAX_REQUEST_BODY_BYTES = 25 * 1024 * 1024
+FILE_RESPONSE_TYPES = {
+    "application/octet-stream",
+    "application/pdf",
+    "application/zip",
+    "application/x-7z-compressed",
+    "application/x-rar-compressed",
+    "application/x-tar",
+    "application/gzip",
+    "application/msword",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/csv",
+}
 
 
 class RequestCancelled(Exception):
@@ -151,6 +169,30 @@ def build_url(raw_url: str, params, variables: dict[str, str]) -> str:
             query_pairs.append((pair["key"], pair["value"]))
     query = urlencode(query_pairs)
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", query, ""))
+
+
+def response_header(headers: dict[str, str | list[str]], name: str) -> str:
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value[0] if isinstance(value, list) else str(value)
+    return ""
+
+
+def response_content_type(headers: dict[str, str | list[str]]) -> str:
+    return response_header(headers, "Content-Type").split(";", 1)[0].strip().lower()
+
+
+def looks_like_file_response(headers: dict[str, str | list[str]]) -> bool:
+    disposition = response_header(headers, "Content-Disposition").lower()
+    if "attachment" in disposition or "filename=" in disposition:
+        return True
+    content_type = response_content_type(headers)
+    return (
+        content_type in FILE_RESPONSE_TYPES
+        or content_type.startswith("image/")
+        or content_type.startswith("audio/")
+        or content_type.startswith("video/")
+    )
 
 
 def build_auth_header(payload, variables, bearer_token: str | None = None) -> str | None:
@@ -340,12 +382,15 @@ def execute_request(
                 existing.append(value)
             else:
                 response_headers[key] = [existing, value]
-        charset_value = response_headers.get("Content-Type", "")
-        charset = charset_value[0] if isinstance(charset_value, list) else charset_value
+        display_raw = raw[:MAX_RESPONSE_DISPLAY_BYTES]
+        charset = response_header(response_headers, "Content-Type")
         encoding = "utf-8"
         if "charset=" in charset:
             encoding = charset.split("charset=", 1)[1].split(";", 1)[0].strip() or "utf-8"
-        text = raw.decode(encoding, errors="replace")
+        text = display_raw.decode(encoding, errors="replace")
+        response_body_base64 = ""
+        if looks_like_file_response(response_headers) and not truncated:
+            response_body_base64 = base64.b64encode(raw).decode("ascii")
         return {
             "ok": True,
             "status": response.status,
@@ -359,6 +404,7 @@ def execute_request(
                 {"key": key, "value": value} for key, value in response_header_items
             ],
             "response_body": text,
+            "response_body_base64": response_body_base64,
             "response_size": len(raw),
             "response_truncated": truncated,
             "tls_verification_skipped": skip_tls_verification,
@@ -380,6 +426,7 @@ def execute_request(
             "response_headers": {},
             "response_header_items": [],
             "response_body": "",
+            "response_body_base64": "",
             "response_size": 0,
             "response_truncated": False,
             "tls_verification_skipped": skip_tls_verification,

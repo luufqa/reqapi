@@ -227,9 +227,44 @@ class HttpClientTests(unittest.TestCase):
             thread.join(timeout=2)
 
         self.assertEqual(result["status"], 200)
+        self.assertEqual(result["response_body_base64"], "")
         self.assertEqual(received["content_type"], "application/json")
         self.assertEqual(received["body"]["query"], "query Ping { ping }")
         self.assertEqual(received["body"]["variables"], {"enabled": True})
+
+    def test_binary_file_response_includes_base64_body(self):
+        pdf_bytes = b"%PDF-1.4\nbinary-response\n%%EOF"
+
+        class FileHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition", 'attachment; filename="report.pdf"')
+                self.send_header("Content-Length", str(len(pdf_bytes)))
+                self.end_headers()
+                self.wfile.write(pdf_bytes)
+
+            def log_message(self, format, *args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), FileHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = execute_request(
+                {
+                    "method": "GET",
+                    "url": f"http://127.0.0.1:{server.server_port}/report",
+                },
+                {},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(base64.b64decode(result["response_body_base64"]), pdf_bytes)
 
 
 if __name__ == "__main__":
